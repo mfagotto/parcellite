@@ -90,6 +90,7 @@ g_signal_connect(clipboard, "owner-change",  G_CALLBACK(handle_owner_change), NU
 #define FIFCMD_RUN_CLI "run_cli"
 #define FIFCMD_RUN_ALL "run_all"
 #define FIFCMD_CLEAR_ALL "clear_all"
+#define FIFCMD_SHOW_HISTORY "show_history"
 
 GtkWidget *hmenu;
 /**see parcellite.h for DEBUG defines  */
@@ -573,6 +574,10 @@ void do_command(gchar *buf, gint len)
 		clear_all((gpointer) NULL);
 		goto end;
 	}
+	if(!p_strcmp(p,FIFCMD_SHOW_HISTORY)) {
+		history_hotkey(NULL, NULL);
+		goto end;
+	}
 end:
 	free(news);
 }
@@ -658,8 +663,10 @@ gboolean check_for_appindictor( gpointer data)
 		/*g_printf("Looking for '%s'\n",appindicator_process); */
 		if(get_pref_int32("multi_user"))
 			mode|=PROC_MODE_USER_QUALIFY;
-		
-		if(get_pref_int32("on_unity") || proc_find(appindicator_process,mode,NULL) >0 ){
+		/* Wayland has no XEmbed StatusIcon; use AppIndicator/SNI when built.
+		 * Unity still detected via preference or indicator-messages-service. */
+		if(is_wayland_session() || get_pref_int32("on_unity") ||
+		   proc_find(appindicator_process,mode,NULL) >0 ){
 			have_appindicator=1;
 			if(NULL == indicator && show_icon)
 				create_app_indicator();	
@@ -2333,6 +2340,11 @@ static void parcellite_init()
 	g_mutex_init(&hist_lock);
   
   show_icon=!get_pref_int32("no_icon");
+#ifdef HAVE_APPINDICATOR
+  /* Prefer AppIndicator immediately under Wayland (StatusIcon will not appear) */
+  if(is_wayland_session())
+    have_appindicator=1;
+#endif
   /* Read history */
   if (get_pref_int32("save_history")){
 		gchar *x;
@@ -2357,10 +2369,12 @@ static void parcellite_init()
 	g_timeout_add(CHECK_APPINDICATOR_INTERVAL, check_for_appindictor, NULL);
 #endif
   
-  /* Bind global keys */
-  keybinder_init();
-	for (i=0;NULL != keylist[i].name; ++i)
-		bind_itemkey(keylist[i].name,keylist[i].keyfunc);
+  /* Bind global keys (X11 only; under Wayland use --show-history + compositor bind) */
+  if(!is_wayland_session()){
+    keybinder_init();
+    for (i=0;NULL != keylist[i].name; ++i)
+      bind_itemkey(keylist[i].name,keylist[i].keyfunc);
+  }
   
   /* Create status icon */
   if (show_icon)
@@ -2452,6 +2466,25 @@ int main(int argc, char *argv[])
 	
 	/**get options/cmd line not parsed.  */
 	if( NULL != opts->leftovers)g_fprintf(stderr,"%s\n",opts->leftovers);
+
+	/* Ask running daemon to show history (compositor keybinds under Wayland) */
+	if(opts->show_history && (PROG_MODE_CLIENT & mode)){
+		if(NULL == (fifo=init_fifo(FIFO_MODE_CMD|mode)) || fifo->fifo_cmd < 3){
+			g_fprintf(stderr,"Unable to open command fifo; is parcellite running?\n");
+			close_fifos(fifo);
+			return 1;
+		}
+		if(0 != write_fifo(fifo,FIFO_MODE_CMD,FIFCMD_SHOW_HISTORY,
+		                   (int)strlen(FIFCMD_SHOW_HISTORY))){
+			g_fprintf(stderr,"Failed to request history menu\n");
+			close_fifos(fifo);
+			return 1;
+		}
+		usleep(1000);
+		close_fifos(fifo);
+		return 0;
+	}
+
 	/**init fifo should set up the fifo and the callback (if we are daemon mode)  */
 		if(opts->primary)	{
 			if(NULL == (fifo=init_fifo(FIFO_MODE_PRI|mode))) return 1;
@@ -2520,6 +2553,9 @@ int main(int argc, char *argv[])
   
   /* Init Parcellite */
   parcellite_init();
+  /* First instance launched with --show-history: show menu after startup */
+  if(opts->show_history)
+    history_hotkey(NULL, NULL);
   /*g_printf("Start main loop\n"); */
   /* Run GTK+ loop */
   gtk_main();
@@ -2530,10 +2566,12 @@ int main(int argc, char *argv[])
 #endif
 	
   /* Unbind keys */
-	keybinder_unbind(get_pref_string("phistory_key"), phistory_hotkey);
-  keybinder_unbind(get_pref_string("history_key"), history_hotkey);
-  keybinder_unbind(get_pref_string("actions_key"), actions_hotkey);
-  keybinder_unbind(get_pref_string("menu_key"), menu_hotkey);
+  if(!is_wayland_session()){
+    keybinder_unbind(get_pref_string("phistory_key"), phistory_hotkey);
+    keybinder_unbind(get_pref_string("history_key"), history_hotkey);
+    keybinder_unbind(get_pref_string("actions_key"), actions_hotkey);
+    keybinder_unbind(get_pref_string("menu_key"), menu_hotkey);
+  }
   /* Cleanup */
 	/**  
   g_free(prefs.history_key);
