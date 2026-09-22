@@ -36,7 +36,9 @@ history menu. Equivalent FIFO form:
 
   echo show_history > ~/.local/share/parcellite/fifo_cmd
 
-X11 hotkeys are unchanged.
+On Wayland the history UI is a small focused window at the pointer (so
+arrow keys and Escape work). On X11 the classic GtkMenu hotkey path is
+unchanged.
 
 Wayland tray icons need AppIndicator (GTK2 StatusIcon is X11-only). Install
 libayatana-appindicator (GTK2 devel package) before building, and use a bar
